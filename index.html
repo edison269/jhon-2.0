@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#030306">
+<link rel="manifest" href="manifest.json">
+<title>Jhon</title>
+<style>
+:root{--fondo:#030306;--crema:#fff1dc;--ambar:#ffb347;--coral:#ff5e5b;--tenue:#8a766a}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%;background:var(--fondo);color:var(--crema);font-family:"Avenir Next","Segoe UI",system-ui,sans-serif;overflow:hidden}
+#app{height:100%;display:flex;flex-direction:column;padding:env(safe-area-inset-top) 20px env(safe-area-inset-bottom)}
+header{display:flex;justify-content:space-between;align-items:center;padding:16px 0 4px}
+header b{font-size:26px;font-weight:700;letter-spacing:-.02em}
+header b i{font-style:normal;color:var(--ambar)}
+#gear{width:44px;height:44px;border-radius:14px;border:1px solid #2b201a;background:#17100c;color:var(--crema);font-size:20px}
+#stage{flex:1;min-height:0;position:relative}
+canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none}
+#estado{text-align:center;color:var(--tenue);font-size:14px;min-height:20px}
+#msg{max-height:26vh;overflow:auto;margin:10px 0 4px;font-size:17px;line-height:1.5;white-space:pre-wrap}
+#msg:empty{display:none}
+#acc{display:flex;flex-wrap:wrap;gap:8px}
+#acc a{background:var(--ambar);color:#1a0f08;text-decoration:none;font-weight:600;font-size:15px;padding:10px 16px;border-radius:999px}
+#info{font-size:11px;color:#5d4c42;min-height:14px}
+#fila{display:flex;gap:8px;margin:8px 0 16px}
+#txt{flex:1;background:#17100c;border:1px solid #2b201a;border-radius:16px;color:var(--crema);font:inherit;font-size:16px;padding:14px 16px;outline:none}
+#txt:focus{border-color:var(--ambar)}
+#send{width:52px;border:0;border-radius:16px;background:var(--ambar);color:#1a0f08;font-size:22px;font-weight:700}
+#ajustes{position:fixed;inset:0;background:#0e0a08ee;display:none;align-items:center;justify-content:center;padding:24px;z-index:5}
+#ajustes.on{display:flex}
+#panel{width:100%;max-width:380px;background:#17100c;border:1px solid #2b201a;border-radius:20px;padding:22px}
+#panel h2{margin:0 0 4px;font-size:20px}
+#panel label{display:block;margin:14px 0 6px;font-size:13px;color:var(--tenue)}
+#panel input,#panel select{width:100%;padding:12px;background:#0e0a08;border:1px solid #2b201a;border-radius:12px;color:var(--crema);font:inherit;font-size:15px}
+#panel button{margin-top:20px;width:100%;padding:14px;border:0;border-radius:14px;background:var(--ambar);color:#1a0f08;font:inherit;font-weight:700}
+small{display:block;margin-top:12px;color:var(--tenue);line-height:1.4;font-size:12px}
+@media (prefers-reduced-motion:reduce){canvas{opacity:.9}}
+</style>
+</head>
+<body>
+<div id="app">
+  <header><b>Jhon<i>.</i></b><button id="gear" aria-label="Ajustes">⚙</button></header>
+  <div id="stage"><canvas id="c" aria-label="Toca para hablar con Jhon"></canvas></div>
+  <div id="estado">Toca la esfera para hablar</div>
+  <div id="msg"></div>
+  <div id="acc"></div>
+  <div id="info"></div>
+  <div id="fila"><input id="txt" placeholder="O escríbele aquí" autocomplete="off"><button id="send" aria-label="Enviar">↑</button></div>
+</div>
+
+<div id="ajustes"><div id="panel">
+  <h2>Ajustes</h2>
+  <label>Clave de Gemini</label>
+  <input id="clave" type="password" placeholder="Pega tu clave aquí" autocomplete="off">
+  <label>Modelo</label>
+  <select id="modelo"><option value="">Automático (el más rápido)</option></select>
+  <label>Voz</label>
+  <select id="voz"><option value="">Automática</option></select>
+  <button id="cerrar">Guardar</button>
+  <small>Para borrar la memoria de Jhon, mantén apretada la esfera.</small>
+</div></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const get = (k, d) => { try { const v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } };
+const set = (k, v) => { try { localStorage.setItem(k, v); } catch (e) {} };
+const del = k => { try { localStorage.removeItem(k); } catch (e) {} };
+
+// ====== CONFIGURACIÓN ======
+const MODELO = "gemini-3.8-flash"; // se reemplaza solo si Google lo retira
+const API = "https://generativelanguage.googleapis.com/v1beta/";
+const SISTEMA = `Eres Jhon, un asistente personal de voz. Hablas en español, natural y cercano, en 1 a 3 frases cortas porque se leen en voz alta. Sin listas ni formato.
+Si te piden algo del celular, responde con una frase corta y al FINAL añade UNA línea exacta con este formato:
+[[{"a":"alarma","h":7,"m":30,"t":"texto"}]]  (alarma, h 0-23)
+[[{"a":"llamar","n":"número"}]]
+[[{"a":"sms","n":"número","t":"mensaje"}]]
+[[{"a":"buscar","q":"búsqueda"}]]
+[[{"a":"mapa","q":"lugar"}]]
+Solo si lo piden. Nunca inventes números de teléfono: si falta, pregúntalo.`;
+
+let memoria = []; try { memoria = JSON.parse(get("jhon_mem", "[]")); } catch (e) {}
+const guardarMem = () => set("jhon_mem", JSON.stringify(memoria.slice(-30)));
+
+// ====== GEMINI ======
+async function listarModelos(clave) {
+  const r = await fetch(API + "models?pageSize=200", { headers: { "x-goog-api-key": clave } });
+  const d = await r.json();
+  if (!r.ok) throw new Error((d.error && d.error.message) || ("Error " + r.status));
+  return (d.models || []).filter(m => (m.supportedGenerationMethods || []).includes("generateContent"))
+    .map(m => m.name.replace("models/", "")).filter(n => /^gemini/i.test(n) && !/(image|tts|live|audio|embed|vision|robotics|computer)/i.test(n));
+}
+async function buscarModelo(clave) {
+  const ver = n => { const m = n.match(/(\d+)(?:\.(\d+))?/); return m ? +m[1] * 100 + (+m[2] || 0) : 0; };
+  const todos = (await listarModelos(clave)).filter(n => /flash/i.test(n) && !/(exp|preview|thinking)/i.test(n));
+  const lite = todos.filter(n => /lite/i.test(n)), norm = todos.filter(n => !/lite/i.test(n));
+  const orden = (lite.length ? lite : norm).sort((x, y) => ver(y) - ver(x));
+  if (!orden.length) throw new Error("No encontré ningún modelo disponible para tu clave.");
+  set("jhon_modelo_auto", orden[0]); set("jhon_cfg", "0");
+  return orden[0];
+}
+const info = { modelo: "" };
+async function llamar(modelo, clave, onTexto) {
+  const cuerpo = cfg => JSON.stringify(Object.assign({ systemInstruction: { parts: [{ text: SISTEMA }] }, contents: memoria.slice(-16) }, cfg ? { generationConfig: cfg } : {}));
+  const intentos = [{ maxOutputTokens: 300, thinkingConfig: { thinkingBudget: 0 } }, { maxOutputTokens: 300, thinkingConfig: { thinkingLevel: "minimal" } }, { maxOutputTokens: 300 }, null];
+  let r, usado = 0;
+  for (let n = +get("jhon_cfg", "0"); n < intentos.length; n++) {
+    usado = n;
+    r = await fetch(API + "models/" + modelo + ":streamGenerateContent?alt=sse", { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": clave }, body: cuerpo(intentos[n]) });
+    if (r.status !== 400) break;
+  }
+  if (r.ok) set("jhon_cfg", String(usado));
+  info.modelo = modelo;
+  if (!r.ok) { let d = {}; try { d = await r.json(); } catch (e) {} return { r, d }; }
+  const lector = r.body.getReader(), dec = new TextDecoder();
+  let buf = "", texto = "";
+  for (;;) {
+    const { done, value } = await lector.read(); if (done) break;
+    buf += dec.decode(value, { stream: true });
+    const lineas = buf.split("\n"); buf = lineas.pop();
+    for (const l of lineas) {
+      if (!l.startsWith("data:")) continue;
+      try {
+        const j = JSON.parse(l.slice(5));
+        const p = ((j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts) || []).map(x => x.text || "").join("");
+        if (p) { texto += p; onTexto(texto); }
+      } catch (e) {}
+    }
+  }
+  return { r, texto };
+}
+async function preguntar(texto, onTexto) {
+  const clave = get("jhon_clave", "");
+  if (!clave) { abrirAjustes(); throw new Error("Falta tu clave de Gemini. Ponla en Ajustes."); }
+  memoria.push({ role: "user", parts: [{ text: texto }] });
+  try {
+    let modelo = get("jhon_modelo", "") || get("jhon_modelo_auto", MODELO);
+    let res = await llamar(modelo, clave, onTexto);
+    const msg = (res.d && res.d.error && res.d.error.message) || "";
+    if (!res.r.ok && (res.r.status === 404 || /no longer available|not found|deprecated|not supported/i.test(msg))) {
+      modelo = await buscarModelo(clave); res = await llamar(modelo, clave, onTexto);
+    }
+    if (!res.r.ok) throw new Error((res.d && res.d.error && res.d.error.message) || ("Error " + res.r.status));
+    const resp = res.texto || "No obtuve respuesta.";
+    memoria.push({ role: "model", parts: [{ text: resp }] }); guardarMem();
+    return resp;
+  } catch (e) { memoria.pop(); throw e; }
+}
+
+// ====== ACCIONES DEL CELULAR ======
+function botonAccion(a) {
+  const e = encodeURIComponent; let txt, href;
+  if (a.a === "alarma") { const h = +a.h, m = +a.m || 0; txt = "⏰ Alarma " + h + ":" + String(m).padStart(2, "0"); href = "intent:#Intent;action=android.intent.action.SET_ALARM;i.android.intent.extra.alarm.HOUR=" + h + ";i.android.intent.extra.alarm.MINUTES=" + m + ";S.android.intent.extra.alarm.MESSAGE=" + e(a.t || "Jhon") + ";end"; }
+  else if (a.a === "llamar" && a.n) { txt = "📞 Llamar " + a.n; href = "tel:" + a.n.replace(/[^\d+]/g, ""); }
+  else if (a.a === "sms" && a.n) { txt = "💬 Mensaje a " + a.n; href = "sms:" + a.n.replace(/[^\d+]/g, "") + "?body=" + e(a.t || ""); }
+  else if (a.a === "buscar" && a.q) { txt = "🔎 Buscar"; href = "https://www.google.com/search?q=" + e(a.q); }
+  else if (a.a === "mapa" && a.q) { txt = "📍 Abrir mapa"; href = "https://www.google.com/maps/search/?api=1&query=" + e(a.q); }
+  else return;
+  const l = document.createElement("a"); l.textContent = txt; l.href = href; $("acc").appendChild(l);
+}
+function procesarAcciones(resp) {
+  $("acc").innerHTML = "";
+  const re = /\[\[(\{.*?\})\]\]/gs; let m;
+  while ((m = re.exec(resp))) { try { botonAccion(JSON.parse(m[1])); } catch (e) {} }
+}
+const limpio = t => t.split("[[")[0].replace(/[*_#`]/g, "");
+
+// ====== VOZ (salida) ======
+let voces = [];
+function cargarVoces() {
+  voces = speechSynthesis.getVoices().filter(v => v.lang.toLowerCase().startsWith("es"));
+  const sel = $("voz"), actual = get("jhon_voz", "");
+  sel.innerHTML = '<option value="">Automática</option>';
+  voces.forEach(v => { const o = document.createElement("option"); o.value = v.name; o.textContent = v.name + " (" + v.lang + ")"; sel.appendChild(o); });
+  sel.value = actual;
+}
+function elegirVoz() {
+  const n = get("jhon_voz", "");
+  return voces.find(v => v.name === n) || voces.find(v => /neural|natural|online/i.test(v.name)) || voces.find(v => /google/i.test(v.name)) || voces[0] || null;
+}
+if ("speechSynthesis" in window) { cargarVoces(); speechSynthesis.onvoiceschanged = cargarVoces; }
+let estado = "idle", pendientes = 0, escuchando = false;
+function decir(t) {
+  t = t.trim(); if (!t || !("speechSynthesis" in window)) return;
+  const u = new SpeechSynthesisUtterance(t); u.lang = "es-ES"; const v = elegirVoz(); if (v) { u.voice = v; u.lang = v.lang; } u.rate = 1.04;
+  pendientes++;
+  u.onstart = () => poner("habla");
+  u.onend = u.onerror = () => { pendientes = Math.max(0, pendientes - 1); if (!pendientes && estado === "habla") poner("idle"); };
+  speechSynthesis.speak(u);
+}
+const TXT = { idle: "Toca la esfera para hablar", escucha: "Te escucho…", piensa: "Pensando…", habla: "Hablando…" };
+function poner(e) { estado = e; $("estado").textContent = TXT[e]; }
+
+// ====== ENVIAR ======
+async function enviar(texto) {
+  texto = (texto || "").trim(); if (!texto) return;
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  pendientes = 0; poner("piensa"); $("msg").textContent = ""; $("acc").innerHTML = ""; $("info").textContent = "";
+  const t0 = performance.now(); let t1 = 0, dicho = 0;
+  try {
+    const r = await preguntar(texto, todo => {
+      if (!t1) t1 = performance.now();
+      const vis = limpio(todo); $("msg").textContent = vis;
+      let resto = vis.slice(dicho), m;
+      while ((m = resto.match(/^[^.!?\n]+[.!?\n]+/))) { decir(m[0]); dicho += m[0].length; resto = vis.slice(dicho); }
+    });
+    const vis = limpio(r); $("msg").textContent = vis.trim();
+    if (vis.slice(dicho).trim()) decir(vis.slice(dicho));
+    procesarAcciones(r);
+    const s = x => ((x - t0) / 1000).toFixed(1) + "s";
+    $("info").textContent = info.modelo + " · 1ª palabra " + s(t1 || performance.now()) + " · total " + s(performance.now());
+  } catch (e) { $("msg").textContent = "No pude conectar con Gemini: " + e.message; }
+  poner(pendientes ? "habla" : "idle");
+}
+
+// ====== MICRÓFONO ======
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null;
+function hablarAJhon() {
+  if (!SR) { $("msg").textContent = "Este navegador no permite voz. Usa Chrome."; return; }
+  if (escuchando && rec) { rec.stop(); return; }
+  if ("speechSynthesis" in window) speechSynthesis.cancel(); pendientes = 0;
+  rec = new SR(); rec.lang = "es-ES"; rec.interimResults = true; rec.continuous = false;
+  let final = "";
+  rec.onstart = () => { escuchando = true; poner("escucha"); };
+  rec.onresult = e => {
+    let tmp = ""; for (let i = e.resultIndex; i < e.results.length; i++) { if (e.results[i].isFinal) final += e.results[i][0].transcript; else tmp += e.results[i][0].transcript; }
+    $("msg").textContent = "“" + (final + tmp) + "”";
+    if (final) { rec.onend = null; escuchando = false; try { rec.stop(); } catch (x) {} enviar(final); }
+  };
+  rec.onerror = e => { escuchando = false; poner("idle"); $("msg").textContent = "Micrófono: " + e.error; };
+  rec.onend = () => { escuchando = false; if (estado === "escucha") poner("idle"); };
+  rec.start();
+}
+$("send").onclick = () => { const t = $("txt").value; $("txt").value = ""; enviar(t); };
+$("txt").onkeydown = e => { if (e.key === "Enter") $("send").click(); };
+
+// ====== AJUSTES ======
+async function llenarModelos() {
+  const sel = $("modelo"), clave = get("jhon_clave", ""), actual = get("jhon_modelo", "");
+  sel.innerHTML = '<option value="">Automático (el más rápido)</option>';
+  if (actual) { const o = document.createElement("option"); o.value = actual; o.textContent = actual; sel.appendChild(o); }
+  sel.value = actual; if (!clave) return;
+  try { (await listarModelos(clave)).sort().forEach(n => { if (n !== actual) { const o = document.createElement("option"); o.value = n; o.textContent = n; sel.appendChild(o); } }); sel.value = actual; } catch (e) {}
+}
+function abrirAjustes() { $("clave").value = get("jhon_clave", ""); llenarModelos(); cargarVoces && "speechSynthesis" in window && cargarVoces(); $("ajustes").classList.add("on"); }
+$("gear").onclick = abrirAjustes;
+$("cerrar").onclick = () => {
+  set("jhon_clave", $("clave").value.trim());
+  const m = $("modelo").value; if (m !== get("jhon_modelo", "")) { set("jhon_cfg", "0"); if (m) set("jhon_modelo", m); else del("jhon_modelo"); }
+  const v = $("voz").value; if (v) set("jhon_voz", v); else del("jhon_voz");
+  $("ajustes").classList.remove("on");
+};
+
+// ====== ARO DE CINTAS DE LUZ ======
+const cv = $("c"), ctx = cv.getContext("2d"); let W, H, DPR;
+function ajustar() { DPR = Math.min(devicePixelRatio || 1, 2); W = cv.clientWidth; H = cv.clientHeight; cv.width = W * DPR; cv.height = H * DPR; }
+addEventListener("resize", ajustar); ajustar();
+const t00 = performance.now(), NH = 46, NP = 110, NG = 8;
+let amp = .05, spd = 1, giro = 0;
+const PARADAS = [[0, "255,150,60"], [.14, "255,105,110"], [.28, "170,70,255"], [.42, "70,80,255"], [.55, "60,110,255"], [.7, "120,70,255"], [.84, "255,185,70"], [1, "255,150,60"]];
+function relleno(a0, alfa) {
+  if (ctx.createConicGradient) {
+    const g = ctx.createConicGradient(a0, 0, 0);
+    PARADAS.forEach(p => g.addColorStop(p[0], "rgba(" + p[1] + "," + alfa + ")"));
+    return g;
+  }
+  const g = ctx.createLinearGradient(-W / 2, 0, W / 2, 0);
+  g.addColorStop(0, "rgba(70,90,255," + alfa + ")"); g.addColorStop(.5, "rgba(170,70,255," + alfa + ")"); g.addColorStop(1, "rgba(255,160,60," + alfa + ")");
+  return g;
+}
+function hebra(u, t, R, fuerza, dip, esc) {
+  ctx.beginPath();
+  for (let i = 0; i <= NP; i++) {
+    const th = i / NP * 6.28318;
+    let m = .06 * Math.sin(2 * th + t * .6 + u * 1.3) + .045 * Math.sin(3 * th - t * .8 + u * 2.1) + .02 * Math.sin(5 * th + t * 1.2 + u * 3.4);
+    m *= fuerza;
+    const v1 = Math.pow(Math.max(0, Math.sin(th - t * .33 + 1 + u * .5)), 4), v2 = Math.pow(Math.max(0, Math.sin(th + t * .27 + 4 - u * .4)), 4);
+    const r = R * (1 + m + (u - .5) * .07 - dip * (v1 + .8 * v2) * (.7 + .3 * Math.sin(u * 7 + t)));
+    const x = Math.cos(th) * r * esc, y = Math.sin(th) * r * esc;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  }
+  ctx.closePath();
+}
+function frame(now) {
+  const t = Math.max(0, (now - t00) / 1000), nace = Math.min(1, t / 1.8), esc = 1 - Math.pow(1 - nace, 3);
+  const ampObj = { idle: .05, escucha: .13, piensa: .09, habla: .1 }[estado];
+  spd += (({ idle: 1, escucha: 2.3, piensa: 3.4, habla: 1.9 }[estado]) - spd) * .06;
+  amp += (ampObj - amp) * .08; giro += .0035 * spd;
+  const ts = t * spd, fuerza = .7 + amp * 5, dip = .22 + amp * 2.2;
+  const R = Math.min(W, H) * .38 * (1 + (estado === "idle" ? .012 * Math.sin(t * 1.4) : .04 * Math.sin(t * 4 * spd / 2)));
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.clearRect(0, 0, W, H);
+  ctx.translate(W / 2, H / 2); ctx.globalCompositeOperation = "lighter"; ctx.lineJoin = "round";
+  ctx.save(); ctx.rotate(giro);
+  // brillo suave
+  ctx.globalAlpha = esc; ctx.lineWidth = 8; ctx.strokeStyle = relleno(0, .07);
+  for (let k = 0; k < NG; k++) { hebra(k / (NG - 1), ts, R, fuerza, dip, esc); ctx.stroke(); }
+  // cintas finas
+  ctx.lineWidth = 1.2; ctx.strokeStyle = relleno(0, .22);
+  for (let k = 0; k < NH; k++) { hebra(k / (NH - 1), ts, R, fuerza, dip, esc); ctx.stroke(); }
+  // hilos brillantes
+  ctx.lineWidth = 1.6; ctx.strokeStyle = relleno(0, .5);
+  for (let k = 0; k < 4; k++) { hebra(k / 3, ts, R, fuerza, dip, esc); ctx.stroke(); }
+  ctx.restore(); ctx.globalAlpha = 1; ctx.globalCompositeOperation = "source-over";
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// Tocar = hablar. Mantener apretado = borrar memoria.
+let timer = null, largo = false;
+cv.addEventListener("pointerdown", () => { largo = false; timer = setTimeout(() => { largo = true; timer = null; if (confirm("¿Borrar la memoria de Jhon?")) { memoria = []; guardarMem(); $("msg").textContent = "Memoria borrada."; } }, 1200); });
+cv.addEventListener("pointerup", () => { if (timer) { clearTimeout(timer); timer = null; } if (!largo) hablarAJhon(); });
+["pointerleave", "pointercancel"].forEach(ev => cv.addEventListener(ev, () => { if (timer) { clearTimeout(timer); timer = null; largo = true; } }));
+
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("sw.js", { updateViaCache: "none" }).then(r => r.update()).catch(() => {});
+  let rec2 = false; navigator.serviceWorker.addEventListener("controllerchange", () => { if (rec2) return; rec2 = true; location.reload(); });
+}
+</script>
+</body>
+</html>
